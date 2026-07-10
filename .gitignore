@@ -1,0 +1,22 @@
+# Virtual Environment (Wajib di-ignore karena isinya ribuan file library)
+venv/
+ENV/
+env/
+
+# Python cache (File otomatis yang dibuat Python saat run program)
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Database Vector & File Model AI (Nanti di-download terpisah/pake cloud, jangan masuk GitHub)
+chroma_db/
+models/
+*.pkl
+*.joblib
+
+# Environment Variables / API Keys (Sangat Rahasia! Jangan sampai bocor ke publik)
+.env
+
+# OS Metadata (File sampah bawaan laptop)
+.DS_Store
+Thumbs.db
