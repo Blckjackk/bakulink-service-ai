@@ -1,42 +1,101 @@
-# Catatan AI 3: Procurement AI Advisor (Asisten Chatbot Pengadaan) 🤖
+# Catatan AI 3: Procurement AI Advisor & Matching Engine (Asisten Pengadaan Pintar) 🤖
 
-Dokumen ini menjelaskan rancangan, spesifikasi data, dan langkah demi langkah pembuatan asisten pengadaan pintar berbasis RAG (Retrieval-Augmented Generation) menggunakan ChromaDB di BakuLink.
-
----
-
-## 📝 1. Deskripsi AI
-Procurement AI Advisor adalah chatbot interaktif di dalam aplikasi BakuLink. Chatbot ini bertindak sebagai konsultan bisnis pintar bagi UMKM dan supplier untuk menanyakan kebijakan perdagangan, regulasi harga pangan pemerintah (HET), manajemen persediaan barang, serta tips negosiasi bisnis.
-
-*   **Tipe AI:** RAG (Retrieval-Augmented Generation) Chatbot.
-*   **LLM Engine:** **Google Gemini Flash 1.5 API** (Gratis & Sangat Cepat untuk Lomba) / OpenAI GPT-4o-mini.
-*   **Vector Store:** **ChromaDB** (Database Vektor Lokal).
+Dokumen ini menjelaskan rancangan, spesifikasi data, matematika algoritma komputasi pemilihan supplier/3PL, dan langkah demi langkah pembuatan asisten pengadaan pintar berbasis RAG (ChromaDB + Gemini) di BakuLink.
 
 ---
 
-## 📊 2. Spesifikasi Data untuk Indexing (ChromaDB)
-AI Advisor membutuhkan basis dokumen pengetahuan (Knowledge Base) dalam format dokumen teks agar bisa menjawab secara akurat sesuai regulasi di Indonesia.
+## 📝 1. Deskripsi AI & Cakupan Fitur
 
-*   **Sumber Dokumen Pengetahuan:**
-    1.  PDF/Teks Regulasi Kementerian Perdagangan & Badan Pangan Nasional tentang Harga Eceran Tertinggi (HET) Beras, Minyak Goreng, dll.
-    2.  Artikel/Panduan tentang manajemen rantai pasok kuliner & UMKM.
-    3.  Pola standar mutu beras (Beras Premium vs. Medium).
-*   **Format Data:** Kumpulan file teks `.txt` atau dokumen `.pdf` yang nantinya dipecah menjadi bagian-bagian kecil (chunking) dan dikonversi menjadi vektor numerik (*embeddings*).
+Procurement AI Advisor memiliki **dua fungsi utama**:
+1. **Chatbot Konsultan Pengadaan (RAG System):** Berinteraksi secara kontekstual untuk menjawab kebijakan perdagangan, regulasi Harga Eceran Tertinggi (HET), standar mutu komoditas (SNI), serta panduan manajemen persediaan.
+2. **Algoritma Pemilihan Supplier & 3PL (Compute Engine):** Menghitung berat kargo volume, Total Landed Cost (TLC), ranking Simple Additive Weighting (SAW 33.33%), dan Bayesian Rating untuk menentukan rekomendasi pemasok dan logistik terbaik bagi UMKM.
 
 ---
 
-## 💻 3. Langkah demi Langkah Pembuatan Vector DB di Google Colab
+## 🧮 2. Landasan Rumus Matematika Algoritma Pemilihan Supplier & 3PL
 
-Kita akan memproses dokumen mentah menjadi basis data vektor ChromaDB menggunakan Google Colab.
+### A. Penentuan Berat Kargo (Dimensional Weight Logic)
+AI menghitung berat aktual vs berat volume, lalu mengambil nilai terbesar sebagai dasar pengalian tarif 3PL:
+$$W_{\text{volume}} = \left( \frac{P \times L \times T}{4000} \right) \times Q$$
+$$W_{\text{final}} = \max(W_{\text{actual}} \times Q, W_{\text{volume}})$$
+*(4000 = standar pembagi kargo darat/laut, P, L, T dalam cm).*
 
-### Langkah 3.1: Install Library Pendukung
-Buka Google Colab baru, dan install library berikut:
+---
+
+### B. Total Landed Cost (TLC) Mentah
+Menghitung total biaya riil untuk setiap pasangan Supplier + 3PL:
+$$C_{\text{ongkir}} = \begin{cases} \text{Berat Minimum 3PL} \times \text{Tarif/kg}, & \text{jika } W_{\text{final}} < \text{Berat Minimum 3PL} \\ W_{\text{final}} \times \text{Tarif/kg}, & \text{jika } W_{\text{final}} \ge \text{Berat Minimum 3PL} \end{cases}$$
+
+$$\text{TLC} = (\text{Harga Produk} \times Q) + C_{\text{ongkir}} + \text{Biaya Handling/Admin}$$
+
+---
+
+### C. Opsi A — Mode Gabungan (Simple Additive Weighting / SAW)
+Dipicu saat pembeli memilih **"Opsi Ideal (Rata-Rata)"** dengan bobot seimbang $33.33\%$ ($0.333$) per aspek:
+
+1. **Normalisasi TLC (Cost - Semakin Kecil Semakin Baik):**
+   $$R_{\text{TLC}} = \frac{\text{TLC}_{\text{Terendah}}}{\text{TLC}_{\text{Supplier Ini}}}$$
+2. **Normalisasi Lead Time (Cost - Semakin Kecil Semakin Baik):**
+   $$R_{\text{Time}} = \frac{\text{Lead Time}_{\text{Tercepat}}}{\text{Lead Time}_{\text{Supplier Ini}}}$$
+3. **Normalisasi Rating (Benefit - Semakin Besar Semakin Baik):**
+   $$R_{\text{Rating}} = \frac{\text{Rating}_{\text{Supplier Ini}}}{5.0}$$
+4. **Skor Akhir SAW:**
+   $$\text{Skor Akhir} = (R_{\text{TLC}} \times 0.333) + (R_{\text{Time}} \times 0.333) + (R_{\text{Rating}} \times 0.333)$$
+
+---
+
+### D. Opsi B — Mode Terpisah (Aspek Tunggal Mutlak)
+1. **Fokus Biaya (TLC Termurah):**
+   * Filter/Sort: $\min(\text{TLC})$. Tie-breaker: Lead Time tercepat.
+2. **Fokus Waktu (Lead Time Tercepat):**
+   * Memperhitungkan penalty riwayat keterlambatan supplier:
+     $$\text{Lead Time Efektif} = \text{Lead Time Standar} + \text{Rata-Rata Hari Terlambat}$$
+   * Sort: $\min(\text{Lead Time Efektif})$.
+3. **Fokus Kualitas (Bayesian Average Rating):**
+   * Mencegah bias supplier baru bintang 5 dari 1 ulasan dikalkulasikan lebih tinggi dari supplier bintang 4.9 dari 1.000 ulasan:
+     $$\text{Skor Rating} = \frac{v \cdot R + m \cdot C}{v + m}$$
+     * $v$: Jumlah ulasan supplier tersebut.
+     * $m$: Batas minimum ulasan kualifikasi (misal: 5).
+     * $R$: Rata-rata rating supplier tersebut (1-5).
+     * $C$: Rata-rata rating seluruh supplier di platform.
+
+---
+
+## 📊 3. Spesifikasi Data untuk Indexing (ChromaDB)
+
+* **Sumber Pengetahuan:**
+  1. PDF/Teks Regulasi Kementerian Perdagangan & Bapanas tentang HET.
+  2. Artikel panduan rantai pasok & manajemen stok UMKM (FIFO).
+  3. Standar mutu komoditas BSN (Beras Medium vs. Premium, SNI Minyak Goreng).
+* **Format:** Kumpulan dokumen `.txt` / `.pdf` yang di-chunk dan di-embed ke vektor.
+
+---
+
+## 💻 4. Langkah demi Langkah Pembuatan Vector DB & RAG di Google Colab
+
+### Langkah 4.1: Install Library
 ```python
-!pip install chromadb sentence-transformers langchain-textsplitters
+!pip install chromadb sentence-transformers
 ```
 
-### Langkah 3.2: Persiapan Dokumen Pengetahuan
-Tulis dokumen pengetahuan Anda ke dalam teks (atau unggah file PDF regulasi):
+### Langkah 4.2: Inisialisasi ChromaDB & Indeks Dokumen
 ```python
+import chromadb
+from chromadb.utils import embedding_functions
+
+# Database Persistent
+chroma_client = chromadb.PersistentClient(path="./chroma_db")
+
+# Model Embedding Multilingual
+emb_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
+    model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+)
+
+collection = chroma_client.create_collection(
+    name="bakulink_knowledge", 
+    embedding_function=emb_fn
+)
+
 documents = [
     {
         "id": "het-beras-2026",
@@ -44,119 +103,83 @@ documents = [
     },
     {
         "id": "manajemen-stok-umkm",
-        "text": "Tips manajemen stok untuk UMKM kuliner: Selalu gunakan metode FIFO (First In First Out) terutama untuk komoditas cepat busuk seperti cabai dan bawang. Batasi stok cabai segar maksimal untuk kebutuhan 3 hari produksi."
-    },
-    {
-        "id": "standar-mutu-minyak",
-        "text": "Standar mutu Minyak Goreng Curah dan Kemasan yang aman dikonsumsi wajib memenuhi kriteria SNI, memiliki kadar air maksimal 0,1% dan kandungan asam lemak bebas maksimal 0,3%."
+        "text": "Tips manajemen stok UMKM: Gunakan metode FIFO (First In First Out). Batasi stok cabai segar maksimal untuk kebutuhan 3 hari produksi."
     }
 ]
-```
 
-### Langkah 3.3: Embed & Simpan Dokumen ke ChromaDB
-Kita akan membuat database vektor lokal di Google Colab dan menyimpannya ke dalam sebuah direktori bernama `chroma_db`:
-```python
-import chromadb
-from chromadb.utils import embedding_functions
-
-# Inisialisasi ChromaDB client dengan penyimpanan persistent (ke folder lokal)
-chroma_client = chromadb.PersistentClient(path="./chroma_db")
-
-# Gunakan model embedding gratis dari HuggingFace (Mendukung multibahasa/Indonesia)
-emb_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
-    model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
-)
-
-# Buat koleksi baru di database
-collection = chroma_client.create_collection(
-    name="bakulink_knowledge", 
-    embedding_function=emb_fn
-)
-
-# Masukkan dokumen ke dalam Vector Store
 collection.add(
     documents=[doc["text"] for doc in documents],
-    ids=[doc["id"] for doc in documents],
-    metadatas=[{"source": "regulasionline"} for _ in documents]
+    ids=[doc["id"] for doc in documents]
 )
 
-print("Vector Database ChromaDB berhasil dibuat!")
+print("ChromaDB Knowledge Base berhasil dibuat!")
 ```
-
-### Langkah 3.4: Uji Coba Pencarian Semantik (Semantic Search)
-Mari kita tes apakah database bisa mencari dokumen yang relevan secara makna kata:
-```python
-# Cari dokumen terkait HET beras
-results = collection.query(
-    query_texts=["berapa harga eceran tertinggi beras medium di jawa?"],
-    n_results=1
-)
-
-print("Dokumen Relevan Ditemukan:")
-print(results['documents'][0][0])
-```
-
-### Langkah 3.5: Ekspor/Zip Folder ChromaDB (Hasil Akhir)
-Kompres folder database yang sudah terisi menjadi berkas `.zip` agar bisa diunduh:
-```python
-!zip -r chroma_db.zip ./chroma_db
-```
-*Unduh file `chroma_db.zip` ke komputer Anda.*
 
 ---
 
-## 💾 4. Cara Penggunaan chroma_db di FastAPI
-
-1.  Ekstrak file `chroma_db.zip` hasil unduhan dari Colab.
-2.  Pindahkan isinya ke dalam folder proyek Anda di:
-    `bakulink-service-ai/chroma_db/`
-3.  Di file `main.py` FastAPI, Anda bisa menyambungkan ChromaDB dengan API Google Gemini untuk menjawab pertanyaan:
+## 💾 5. Integration di FastAPI (`main.py`)
 
 ```python
 import chromadb
 from chromadb.utils import embedding_functions
 from fastapi import FastAPI
-import google.generativeai as genai
+from pydantic import BaseModel
 
 app = FastAPI()
 
-# Konfigurasi Gemini API Key
-genai.configure(api_key="API_KEY_GEMINI_ANDA")
-llm_model = genai.GenerativeModel('gemini-1.5-flash')
-
-# Muat ChromaDB yang sudah di-extract
+# Inisialisasi ChromaDB
 emb_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
     model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 )
 chroma_client = chromadb.PersistentClient(path="chroma_db")
 collection = chroma_client.get_collection(name="bakulink_knowledge", embedding_function=emb_fn)
 
-@app.post("/advisor")
-def ask_advisor(question: str):
-    # 1. Cari dokumen relevan di ChromaDB
-    search_results = collection.query(query_texts=[question], n_results=1)
-    context = search_results['documents'][0][0] if search_results['documents'] else ""
+# Model Data SAW Request
+class SupplierMatchRequest(BaseModel):
+    length_cm: float
+    width_cm: float
+    height_cm: float
+    actual_weight_kg: float
+    quantity: int
+    suppliers: list[dict] # [{id, price, lead_time, rating, review_count, min_weight_3pl, tariff_per_kg}]
+
+@app.post("/rank-suppliers-saw")
+def rank_suppliers_saw(req: SupplierMatchRequest):
+    # 1. Dimensional Weight
+    vol_weight = ((req.length_cm * req.width_cm * req.height_cm) / 4000.0) * req.quantity
+    final_weight = max(req.actual_weight_kg * req.quantity, vol_weight)
     
-    # 2. Susun prompt RAG untuk Gemini
-    prompt = f"""
-    Kamu adalah Procurement AI Advisor bernama BakuLink Advisor.
-    Jawablah pertanyaan user secara profesional dan ramah menggunakan Konteks Referensi di bawah ini.
-    Jika tidak ada di referensi, jawablah dengan pengetahuan umum terbaikmu namun beri tahu jika itu di luar regulasi resmi BakuLink.
+    results = []
+    for s in req.suppliers:
+        # TLC
+        chargeable_w = max(final_weight, s.get('min_weight_3pl', 1.0))
+        c_ongkir = chargeable_w * s['tariff_per_kg']
+        tlc = (s['price'] * req.quantity) + c_ongkir
+        
+        # Bayesian Rating (m=5, C=4.5)
+        v = s.get('review_count', 0)
+        R = s.get('rating', 0)
+        bayesian_r = (v * R + 5 * 4.5) / (v + 5)
+        
+        results.append({
+            "supplier_id": s['id'],
+            "tlc": tlc,
+            "lead_time": s['lead_time'],
+            "bayesian_rating": bayesian_r
+        })
     
-    Konteks Referensi:
-    {context}
+    # 2. Normalisasi SAW
+    min_tlc = min(r['tlc'] for r in results)
+    min_time = min(r['lead_time'] for r in results)
     
-    Pertanyaan: {question}
-    Jawaban:
-    """
-    
-    # 3. Minta jawaban dari Gemini LLM
-    response = llm_model.generate_content(prompt)
-    
-    return {
-        "status": "success",
-        "answer": response.text,
-        "source_context": context
-    }
+    for r in results:
+        r_tlc = min_tlc / r['tlc']
+        r_time = min_time / r['lead_time']
+        r_rating = r['bayesian_rating'] / 5.0
+        
+        r['final_saw_score'] = round((r_tlc * 0.333) + (r_time * 0.333) + (r_rating * 0.333), 4)
+        
+    # Sort
+    results.sort(key=lambda x: x['final_saw_score'], reverse=True)
+    return {"status": "success", "final_weight_kg": final_weight, "rankings": results}
 ```
-*Sekarang chatbot AI Anda siap memandu para UMKM dengan basis data regulasi yang kredibel dan real-time!*
