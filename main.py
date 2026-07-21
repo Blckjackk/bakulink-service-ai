@@ -5,10 +5,21 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from prophet import Prophet
 
+from fastapi.middleware.cors import CORSMiddleware
+
 app = FastAPI(
     title="BakuLink AI Service",
     description="Service AI untuk Price Forecasting, Demand Forecasting, & Procurement Advisor",
     version="1.0.0"
+)
+
+# Enable CORS Middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Model data input request
