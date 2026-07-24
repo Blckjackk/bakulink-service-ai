@@ -24,18 +24,32 @@ app.add_middleware(
 )
 
 # ----------------------------------------------------------------------
-# ChromaDB RAG Setup (Stub — aktifkan setelah knowledge base selesai)
+# ChromaDB & Google Gemini LLM RAG Setup
 # ----------------------------------------------------------------------
 rag_collection = None
+gemini_model = None
+
+def init_gemini():
+    """
+    Inisialisasi Google Gemini API jika GEMINI_API_KEY atau GOOGLE_API_KEY tersedia.
+    """
+    global gemini_model
+    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+    if api_key:
+        try:
+            import google.generativeai as genai
+            genai.configure(api_key=api_key)
+            gemini_model = genai.GenerativeModel("gemini-1.5-flash")
+            print("[Gemini LLM] Google Gemini API configured successfully!")
+        except Exception as e:
+            print(f"[Gemini LLM] Failed to configure Gemini API: {e}")
+            gemini_model = None
+    else:
+        print("[Gemini LLM] GEMINI_API_KEY not found in environment. Using RAG rule fallback.")
 
 def init_rag():
     """
     Inisialisasi ChromaDB collection untuk RAG.
-    Dipanggil sekali saat startup. Jika gagal, fallback ke rule-based.
-    Untuk mengaktifkan:
-      1. pip install chromadb sentence-transformers
-      2. Jalankan indexing script untuk mengisi chroma_db/
-      3. Uncomment blok di bawah ini
     """
     global rag_collection
     try:
@@ -51,12 +65,13 @@ def init_rag():
         )
         print("[RAG] ChromaDB collection loaded successfully.")
     except Exception as e:
-        print(f"[RAG] ChromaDB not available, using rule-based fallback: {e}")
+        print(f"[RAG] ChromaDB load note: {e}")
         rag_collection = None
 
-# Jalankan init RAG saat startup
+# Jalankan init RAG & Gemini saat startup
 try:
     init_rag()
+    init_gemini()
 except Exception:
     pass
 
@@ -328,33 +343,58 @@ RAG_RESPONSES_FALLBACK = {
     "default": "Berdasarkan regulasi Badan Pangan Nasional dan panduan rantai pasok BakuLink: disarankan memilih supplier dengan lencana Verified BakuLink untuk menjamin akurasi kuantitas, kualitas sesuai standar SNI, serta garansi penggantian untuk kerusakan selama pengiriman. Gunakan fitur TLC Calculator untuk membandingkan total biaya pengadaan secara akurat.",
 }
 
-def get_rag_response(query: str) -> str:
+def get_rag_response(query: str, chat_history: list = None) -> str:
     """
-    Coba ambil dari ChromaDB. Jika tidak tersedia, gunakan fallback rule-based.
+    Mengambil konteks dari ChromaDB Vector DB dan menghasilkan respons LLM alami via Google Gemini API.
+    Jika Gemini API Key belum ada atau error, fallback ke teks RAG / rule-based.
     """
-    global rag_collection
+    global rag_collection, gemini_model
     q = query.lower()
 
-    # Coba RAG nyata
+    # 1. Query ChromaDB Vector Collection untuk mendapatkan chunk konteks terelasi
+    retrieved_docs = []
     if rag_collection is not None:
         try:
-            results = rag_collection.query(query_texts=[query], n_results=2)
+            results = rag_collection.query(query_texts=[query], n_results=3)
             docs = results.get("documents", [[]])[0]
             if docs:
-                context = "\n".join(docs)
-                # TODO: Feed context ke Gemini API untuk jawaban
-                # Sementara return context langsung
-                return f"Berdasarkan knowledge base BakuLink: {context}"
+                retrieved_docs = docs
         except Exception as e:
-            pass  # Fallback ke rule-based
+            print(f"[RAG] Error querying ChromaDB: {e}")
 
-    # Rule-based fallback
+    rag_context = "\n---\n".join(retrieved_docs) if retrieved_docs else ""
+
+    # 2. Panggil Google Gemini LLM jika API Key terpasang
+    if gemini_model is not None:
+        try:
+            prompt = f"""Anda adalah BakuLink AI Procurement Advisor, konsultan pengadaan cerdas untuk UMKM bahan pangan di Indonesia.
+Tugas Anda adalah memberikan saran pengadaan, regulasi pasar (HET/SNI), serta panduan rantai pasok secara ramah, profesional, dan solutif.
+
+[DOKUMEN KNOWLEDGE BASE (RAG)]:
+{rag_context if rag_context else "Gunakan pengetahuan umum rantai pasok pangan dan regulasi Badan Pangan Nasional Indonesia."}
+
+[PERTANYAAN UMKM]:
+{query}
+
+Jawablah langsung secara kontekstual, singkat, jelas, berwawasan bisnis UMKM, dan gunakan format Markdown (seperti bold atau bullet points) agar mudah dibaca."""
+
+            response = gemini_model.generate_content(prompt)
+            if response and response.text:
+                return response.text.strip()
+        except Exception as e:
+            print(f"[Gemini LLM] Error calling Gemini API: {e}")
+
+    # 3. Fallback jika Gemini API Key belum dipasang
+    if retrieved_docs:
+        return f"Berdasarkan Knowledge Base BakuLink:\n\n{retrieved_docs[0]}"
+
     if any(kw in q for kw in ["het", "harga eceran", "harga tertinggi", "batas harga"]):
         return RAG_RESPONSES_FALLBACK["het"]
     if any(kw in q for kw in ["fifo", "stok", "manajemen persediaan", "inventory"]):
         return RAG_RESPONSES_FALLBACK["fifo"]
     if any(kw in q for kw in ["sni", "standar", "kualitas", "mutu", "sertifikat"]):
         return RAG_RESPONSES_FALLBACK["sni"]
+
     return RAG_RESPONSES_FALLBACK["default"]
 
 
